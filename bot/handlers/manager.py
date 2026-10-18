@@ -91,7 +91,7 @@ async def broadcast_content_text(message: Msg, state: FSMContext) -> None:
 @router.message(BroadcastStates.waiting_for_content, F.photo)
 async def broadcast_content_photo(message: Msg, state: FSMContext) -> None:
     await state.update_data(
-        broadcast_text="",
+        broadcast_text=message.text or "",
         broadcast_photo=message.photo.token,
     )
     await _ask_recipients(message, state)
@@ -730,53 +730,6 @@ async def absence_freeze_valid(callback: Callback, db: Database) -> None:
     )
     await callback.message.answer("🙏 Занятие не списано, лимит заморозок не тронут.")
     await callback.answer("🙏 Уважительная")
-
-
-# ==================== ЗАМОРОЗКИ И СПРАВКИ ====================
-
-@router.callback_query(F.data == "menu:manager:freezes")
-async def manager_freezes(callback: Callback, db: Database) -> None:
-    if not _is_manager(callback.from_user.id, db):
-        await callback.answer("❌ Недоступно.")
-        return
-    await callback.answer()
-
-    waiting = db.get_freezes_awaiting_certificate()
-    withcert = db.get_freezes_with_certificate(limit=20)
-
-    await callback.message.answer(
-        f"❄️ <b>Заморозки по уважительной причине</b>\n\n"
-        f"⏳ Ждут справку: {len(waiting)}\n"
-        f"📄 Со справкой: {len(withcert)}",
-        parse_mode="HTML",
-    )
-
-    for i, f in enumerate(waiting[:15]):
-        if i:
-            await asyncio.sleep(settings.MAX_SEND_DELAY)
-        await safe_call(lambda r=f: callback.message.answer(
-            f"⏳ <b>Ждёт справку</b>\n"
-            f"👤 {esc(r.get('client_name') or r['client_id'])}\n"
-            f"📅 Занятие: {esc(freeze_when(r))}\n"
-            f"🕐 Оформлено: {esc(fmt_db_time(r.get('created_at')))}",
-            parse_mode="HTML",
-        ))
-
-    for i, f in enumerate(withcert[:15]):
-        await asyncio.sleep(settings.MAX_SEND_DELAY)
-        att = [{
-            "type": "image" if f.get("certificate_type") == "photo" else "file",
-            "payload": {"token": f["certificate_file_id"]},
-        }]
-        await safe_call(lambda r=f, a=att: callback.message.answer(
-            f"📄 <b>Справка</b>\n"
-            f"👤 {esc(r.get('client_name') or r['client_id'])}\n"
-            f"📅 Занятие: {esc(freeze_when(r))}",
-            parse_mode="HTML",
-        ))
-        await safe_call(lambda a=att: callback.bot.send_message(
-            user_id=callback.from_user.id, attachments=a
-        ))
 
 
 # ==================== ПОДДЕРЖКА (сторона менеджера) ====================
