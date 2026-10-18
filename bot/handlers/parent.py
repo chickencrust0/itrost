@@ -26,6 +26,7 @@ from bot.formatting import (
     lesson_sort_key,
     format_lesson,  # noqa: F401  (используется через build_schedule)
     safe_call,
+    STATUS_CANCELLED,
 )
 from bot.handlers.common import fetch_lessons, get_lesson_snapshot, manager_ids
 from bot.dispatcher import F, Router

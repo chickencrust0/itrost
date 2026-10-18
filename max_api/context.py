@@ -43,6 +43,10 @@ class FileRef:
     token: str
     file_name: str
     kind: str  # "image" | "file" | "video" | "audio"
+    # Для входящих изображений MAX возвращает готовый URL. Он нужен для
+    # повторной отправки: token входящего вложения не всегда можно
+    # использовать как token загруженного ботом файла.
+    url: Optional[str] = None
 
 
 def _parse_user(raw: Dict[str, Any]) -> FromUser:
@@ -84,14 +88,25 @@ class Msg:
                         phone_number=phone,
                         user_id=(payload.get("max_info") or {}).get("user_id"),
                     )
-            elif a_type == "image":
-                # Предполагается, что token входящего вложения так же годится
-                # для повторной отправки через attachments=[{token: ...}],
-                # как и token, полученный от POST /uploads (см. пример
-                # ImageAttachment({token: 'existingImageToken'}) в
-                # библиотеке JS) — отдельно вендором не подтверждено.
+            # Старые обновления MAX могли обозначать изображение как
+            # `photo`; в запросах API сейчас используется `image`.
+            elif a_type in ("image", "photo"):
+                photo_tokens = payload.get("photos")
+                if not isinstance(photo_tokens, dict):
+                    photo_tokens = {}
+                token = payload.get("token") or next(
+                    (
+                        item.get("token")
+                        for item in photo_tokens.values()
+                        if isinstance(item, dict) and item.get("token")
+                    ),
+                    "",
+                )
                 self.photo = FileRef(
-                    token=payload.get("token", ""), file_name="photo.jpg", kind="image"
+                    token=token,
+                    file_name="photo.jpg",
+                    kind="image",
+                    url=payload.get("url"),
                 )
             elif a_type == "file":
                 self.document = FileRef(
