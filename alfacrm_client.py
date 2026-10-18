@@ -431,8 +431,7 @@ class AlfaCRMClient:
     # ==================== АБОНЕМЕНТЫ И БАЛАНС ====================
     #
     # В AlfaCRM остаток занятий лежит прямо на карточке ученика:
-    #   paid_lesson_count — сколько занятий оплачено,
-    #   paid_count        — сколько из них уже проведено,
+    #   paid_lesson_count — текущий остаток занятий (не число оплат),
     #   balance           — деньги на счету.
     # Этого достаточно и для родителя, и для проверки низкого баланса,
     # поэтому отдельный запрос абонементов (customer-tariff) —
@@ -448,9 +447,9 @@ class AlfaCRMClient:
             return 0
 
     def _lessons_left(self, customer: Dict[str, Any]) -> int:
-        paid = self._int(customer.get("paid_lesson_count"))
-        used = self._int(customer.get("paid_count"))
-        return max(0, paid - used)
+        # По документации AlfaCRM paid_lesson_count уже является текущим
+        # остатком. paid_count не нужно вычитать из него повторно.
+        return max(0, self._int(customer.get("paid_lesson_count")))
 
     @staticmethod
     def _first(record: Dict[str, Any], *names: str) -> Any:
@@ -487,7 +486,7 @@ class AlfaCRMClient:
         result: List[Dict[str, Any]] = []
 
         for t in await self._load_customer_tariffs(client_id):
-            if t.get("is_deleted"):
+            if t.get("is_deleted") or t.get("dead"):
                 continue
             total = self._int(self._first(t, "lesson_count", "lessons_count", "count"))
             left = self._int(self._first(t, "lesson_left", "lessons_left", "balance"))
@@ -511,17 +510,16 @@ class AlfaCRMClient:
         customer = await self._find_customer(client_id)
         if not customer:
             return []
-        total = self._int(customer.get("paid_lesson_count"))
-        used = self._int(customer.get("paid_count"))
-        if not total and not used:
+        left = self._lessons_left(customer)
+        if not left:
             return []
         return [{
             "id": customer.get("id"),
             "entity": "customer",
             "name": "Оплаченные занятия",
-            "left": max(0, total - used),
-            "total": total,
-            "used": used,
+            "left": left,
+            "total": left,
+            "used": 0,
             "frozen": False,
             "end_date": _date_only(customer.get("paid_till")),
             "days_left": None,
@@ -540,14 +538,13 @@ class AlfaCRMClient:
             cid = c.get("id")
             if cid is None:
                 continue
-            paid = self._int(c.get("paid_lesson_count"))
-            used = self._int(c.get("paid_count"))
-            if not paid and not used:
+            left = self._lessons_left(c)
+            if not left:
                 # Оплат не было вовсе — это не «баланс заканчивается», а
                 # «ученик ещё не занимается». Такие в проверку не идут,
                 # иначе уведомление уйдёт на всю базу разом.
                 continue
-            result[str(cid)] = {"left": max(0, paid - used), "paid": paid, "used": used}
+            result[str(cid)] = {"left": left, "paid": left, "used": 0}
         return result
 
     async def _find_customer(self, customer_id: Any) -> Optional[Dict[str, Any]]:
@@ -584,9 +581,28 @@ class AlfaCRMClient:
         result["subscriptions"] = []
 
         try:
-            result["subscriptions"] = await self.get_subscriptions(customer_id)
+            subscriptions = await self.get_subscriptions(customer_id)
         except AlfaCRMError as e:
             logger.warning(f"⚠️ Не удалось получить абонементы клиента {customer_id}: {e}")
+            subscriptions = []
+
+        # Остатки отдельных абонементов точнее общей цифры на карточке.
+        # Строка customer — только запасное значение из карточки, не отдельный
+        # абонемент; повторно добавлять её к итогу нельзя.
+        real_subscriptions = [
+            sub for sub in subscriptions if sub.get("entity") != "customer"
+        ]
+        result["subscriptions"] = subscriptions
+        if real_subscriptions:
+            result["lessons_left"] = sum(
+                max(0, self._int(sub.get("left"))) for sub in real_subscriptions
+            )
+            result["paid_lesson_count"] = sum(
+                self._int(sub.get("total")) for sub in real_subscriptions
+            )
+            result["paid_count"] = sum(
+                self._int(sub.get("used")) for sub in real_subscriptions
+            )
 
         return result
 
