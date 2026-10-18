@@ -14,15 +14,12 @@ import settings
 from alfacrm_client import AlfaCRMClient, AlfaCRMError
 from cache import LessonCache
 from database import Database
-from freezes import FreezeCounter
 from bot.formatting import (
     answer_blocks,
     split_messages,
     esc,
     fmt_date_long,
     fmt_db_time,
-    freeze_deadline_hint,
-    freeze_when,
     safe_call,
 )
 from bot.handlers.common import (
@@ -619,9 +616,7 @@ async def _notify_parent_burned(callback: Callback, db: Database, absence) -> No
 
     text = (
         "😔 <b>Занятие сгорело</b>\n\n"
-        f"Ребёнок не был на занятии {esc(absence.get('lesson_date') or '')}, "
-        f"и заморозить его уже не получилось — это возможно не позднее "
-        f"чем за {freeze_deadline_hint()} до начала.\n\n"
+        f"Ребёнок не был на занятии {esc(absence.get('lesson_date') or '')}.\n\n"
         "Если это ошибка или была уважительная причина — просто напишите "
         "менеджеру, он разберётся и вернёт занятие. Ничего страшного "
         "не произошло 🙂"
@@ -657,61 +652,9 @@ async def _resolve_absence(
     return absence
 
 
-@router.callback_query(F.data.startswith("frz_no:"))
-async def absence_freeze_no_reason(
-    callback: Callback, db: Database, freezes: FreezeCounter, crm: AlfaCRMClient
-) -> None:
-    """
-    Беспричинная заморозка: занятие не сгорает, но расходуется одна
-    беспричинная заморозка клиента (счётчик в поле адреса проживания).
-    """
-    if not _is_manager(callback.from_user.id, db):
-        await callback.answer("❌ Недоступно.")
-        return
-
-    absence_id = int(callback.data.split(":")[1])
-    absence = db.get_absence(absence_id)
-    if not absence:
-        await callback.answer("Неявка не найдена.")
-        return
-
-    try:
-        left = await freezes.spend(absence["client_id"])
-    except AlfaCRMError as e:
-        await callback.answer()
-        await callback.message.answer(f"❌ {esc(str(e))}", parse_mode="HTML")
-        return
-
-    # В absences статус остаётся 'excused' — CHECK в таблице разрешает
-    # только pending/burned/excused, а менять схему у работающей базы
-    # ради оттенка статуса рискованно. Детали (беспричинная это заморозка
-    # или уважительная) хранятся в таблице freezes, откуда их и читают
-    # отчёты и раздел справок.
-    resolved = await _resolve_absence(
-        callback, db, "excused", "❄️ Заморозка без причины"
-    )
-    if resolved is None:
-        return
-
-    db.add_freeze(
-        absence["client_id"],
-        kind="no_reason",
-        client_name=absence.get("client_name") or "",
-        lesson_id=absence.get("lesson_id"),
-        lesson_date=absence.get("lesson_date") or "",
-        created_by=callback.from_user.id,
-        created_by_role="manager",
-    )
-    await callback.message.answer(
-        f"❄️ Заморозка списана. У клиента осталось <b>{left}</b> беспричинных заморозок.",
-        parse_mode="HTML",
-    )
-    await callback.answer("❄️ Заморожено")
-
-
 @router.callback_query(F.data.startswith("frz_ok:"))
-async def absence_freeze_valid(callback: Callback, db: Database) -> None:
-    """Уважительная причина: ни занятие, ни счётчик заморозок не трогаем."""
+async def absence_excuse(callback: Callback, db: Database) -> None:
+    """Уважительная причина: занятие не сгорает."""
     if not _is_manager(callback.from_user.id, db):
         await callback.answer("❌ Недоступно.")
         return
@@ -728,17 +671,7 @@ async def absence_freeze_valid(callback: Callback, db: Database) -> None:
     if resolved is None:
         return
 
-    db.add_freeze(
-        absence["client_id"],
-        kind="valid",
-        reason="manager",
-        client_name=absence.get("client_name") or "",
-        lesson_id=absence.get("lesson_id"),
-        lesson_date=absence.get("lesson_date") or "",
-        created_by=callback.from_user.id,
-        created_by_role="manager",
-    )
-    await callback.message.answer("🙏 Занятие не списано, лимит заморозок не тронут.")
+    await callback.message.answer("🙏 Занятие не списано.")
     await callback.answer("🙏 Уважительная")
 
 
