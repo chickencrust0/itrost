@@ -78,7 +78,3 @@ class ManagerLoginStates:
     """Вход менеджера по паролю (/manager) — без правки .env."""
     waiting_for_password = "manager_login:waiting_for_password"
 
-
-class FreezeStates:
-    """Прикрепление справки к заморозке по уважительной причине."""
-    waiting_for_certificate = "freeze:waiting_for_certificate"

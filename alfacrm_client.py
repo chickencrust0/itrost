@@ -361,6 +361,49 @@ class AlfaCRMClient:
         """
         return await self.load_all_customers(is_study=1)
 
+    async def load_group_members(self, group_id: Any) -> List[Any]:
+        """
+        Ученики группы (CGI — связь клиенты-группы).
+
+        Зачем это нужно: у группового занятия в AlfaCRM поле
+        `customer_ids` ПУСТОЕ — состав участников там не хранится,
+        ученики привязаны к группе (CGI), а занятие ссылается на неё
+        через `group_ids`. Без доразрешения состава родитель ребёнка из
+        группы видел пустое расписание, хотя преподаватель видел это же
+        занятие.
+
+        Один и тот же group_id спрашивается многократно (по одному разу
+        на каждое занятие группы в окне кеша), поэтому ответ кешируется
+        общим TTL-кешем справочников.
+        """
+
+        async def loader():
+            items = await self._load_all_pages(
+                self._endpoint("cgi"), {"group_id": group_id}
+            )
+            # CGI-запись — это связь, а не клиент: id ученика лежит в
+            # customer_id. На случай плоского ответа {id: ...} клиент
+            # попадёт и без доработки, поэтому берём оба поля.
+            members: List[Any] = []
+            for item in items:
+                cid = item.get("customer_id")
+                if cid is None:
+                    cid = item.get("id")
+                if cid is not None:
+                    members.append(cid)
+            return members
+
+        return await self._lookups.get(f"group_members:{group_id}", loader)
+
+    async def load_subject_names(self) -> Dict[Any, str]:
+        """Справочник предметов: id -> название. Нужен для подписи занятия."""
+
+        async def loader():
+            items = await self._load_all_pages(self._endpoint("subject"), {})
+            return {s.get("id"): (s.get("name") or "") for s in items}
+
+        return await self._lookups.get("subjects", loader)
+
     def invalidate_lookups(self) -> None:
         self._lookups.invalidate()
 
@@ -550,15 +593,27 @@ class AlfaCRMClient:
     # ==================== УРОКИ ====================
 
     @staticmethod
-    def _normalize_lesson(raw: Dict[str, Any]) -> Dict[str, Any]:
+    def _normalize_lesson(
+        raw: Dict[str, Any], subject_names: Optional[Dict[Any, str]] = None
+    ) -> Dict[str, Any]:
         """
         Приводит урок AlfaCRM к форме, которую ждут кеш и форматирование.
 
         Правка минимальная — в отличие от AlfaCRM, здесь почти всё
         уже лежит под нужными именами. Приводятся только типы: списки
         teacher_ids/customer_ids у AlfaCRM бывают и списком, и скаляром.
+
+        lesson_type_name: в ответе lesson/index поля subject_name НЕТ —
+        есть только subject_id. Раньше подпись занятия бралась прямо из
+        subject_name, его не было, и во всех карточках стояло пусто
+        («занятие без названия»). Название достаётся из справочника
+        subject (subject_names) по subject_id.
         """
         date = _date_only(raw.get("date")) or _date_only(raw.get("time_from"))
+        subject_id = raw.get("subject_id")
+        subject_name = ""
+        if subject_names and subject_id is not None:
+            subject_name = subject_names.get(subject_id, "") or ""
         return {
             "id": raw.get("id"),
             "date": date,
@@ -571,9 +626,57 @@ class AlfaCRMClient:
             "topic": (raw.get("topic") or "").strip(),
             "homework": (raw.get("homework") or "").strip(),
             "note": (raw.get("note") or "").strip(),
-            "lesson_type_name": raw.get("subject_name") or raw.get("lesson_type_name") or "",
+            "subject_id": subject_id,
+            "lesson_type_name": (
+                raw.get("subject_name") or subject_name or raw.get("lesson_type_name") or ""
+            ),
             "_raw": raw,
         }
+
+    async def _enrich_group_members(
+        self, lessons: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Достраивает customer_ids у групповых занятий по составу группы.
+
+        В AlfaCRM состав участников живёт не в уроке, а в группе (CGI).
+        У индивидуального занятия customer_ids заполнен, у группового —
+        пуст, поэтому родитель не видел ни одного занятия своего ребёнка.
+        Группа спрашивается один раз на group_id (кеш справочников), а не
+        на каждое занятие.
+        """
+        group_ids: List[Any] = []
+        for lesson in lessons:
+            if lesson.get("customer_ids"):
+                continue
+            gid = lesson.get("group_id")
+            if gid is None or gid in group_ids:
+                continue
+            group_ids.append(gid)
+
+        if not group_ids:
+            return lessons
+
+        members_by_group: Dict[Any, List[Any]] = {}
+        for gid in group_ids:
+            try:
+                members_by_group[gid] = await self.load_group_members(gid)
+            except AlfaCRMError as e:
+                logger.warning(f"⚠️ Не удалось получить состав группы {gid}: {e}")
+                members_by_group[gid] = []
+
+        filled = 0
+        for lesson in lessons:
+            if lesson.get("customer_ids"):
+                continue
+            members = members_by_group.get(lesson.get("group_id")) or []
+            if members:
+                lesson["customer_ids"] = list(members)
+                filled += 1
+
+        if filled:
+            logger.info(f"👥 customer_ids достроены по группе у {filled} занятий")
+        return lessons
 
     async def get_lessons(
         self,
@@ -602,6 +705,12 @@ class AlfaCRMClient:
 
         by_id: Dict[Any, Dict[str, Any]] = {}
 
+        subject_names: Dict[Any, str] = {}
+        try:
+            subject_names = await self.load_subject_names()
+        except AlfaCRMError as e:
+            logger.debug(f"Справочник предметов недоступен: {e}")
+
         for st in statuses:
             payload = {**base_payload, "status": st}
             page = 0
@@ -623,12 +732,17 @@ class AlfaCRMClient:
                     break
                 page += 1
 
-        lessons = [self._normalize_lesson(l) for l in by_id.values()]
+        lessons = [self._normalize_lesson(l, subject_names) for l in by_id.values()]
+        lessons = await self._enrich_group_members(lessons)
         logger.info(f"📊 Получено уроков из AlfaCRM: {len(lessons)} ({date_from} – {date_to})")
         return lessons
 
     async def get_lesson(self, lesson_id: Any) -> Optional[Dict[str, Any]]:
         """Один урок. Перебор всей истории как fallback не делается — он стоил сотни запросов."""
+        try:
+            subject_names = await self.load_subject_names()
+        except AlfaCRMError:
+            subject_names = {}
         for st in [None] + list(settings.ALL_STATUSES):
             payload: Dict[str, Any] = {"id": lesson_id, "page": 0}
             if st is not None:
@@ -642,7 +756,9 @@ class AlfaCRMClient:
                 continue
             for lesson in result.get("items") or []:
                 if _same_id(lesson.get("id"), lesson_id):
-                    return self._normalize_lesson(lesson)
+                    normalized = self._normalize_lesson(lesson, subject_names)
+                    enriched = await self._enrich_group_members([normalized])
+                    return enriched[0]
         return None
 
     async def update_lesson(

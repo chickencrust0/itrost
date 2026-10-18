@@ -22,7 +22,6 @@ import settings
 from bot.notifier import ManagerNotifier
 from cache import LessonCache
 from database import Database
-from freezes import FreezeCounter
 from alfacrm_client import AlfaCRMClient
 from max_api.client import MaxBot
 from scheduler import ReminderScheduler
@@ -68,10 +67,9 @@ def build_dispatcher(
     crm: AlfaCRMClient,
     cache: LessonCache,
     notifier: ManagerNotifier,
-    freezes: FreezeCounter,
 ) -> Dispatcher:
     dp = Dispatcher(
-        bot, db=db, crm=crm, cache=cache, notifier=notifier, freezes=freezes
+        bot, db=db, crm=crm, cache=cache, notifier=notifier
     )
     # Порядок важен. Диспетчер останавливается на ПЕРВОМ совпавшем
     # обработчике, а в start.py есть фильтр F.text.regexp с номером
@@ -179,10 +177,7 @@ async def main() -> None:
     reminder_scheduler.start()
 
     notifier = ManagerNotifier(bot, db)
-    # Счётчик заморозок: одна точка правила «сначала поле CRM, иначе
-    # база бота». Хендлеры получают его через DI под именем freezes.
-    freezes = FreezeCounter(crm, db)
-    dp = build_dispatcher(bot, db, crm, cache, notifier, freezes)
+    dp = build_dispatcher(bot, db, crm, cache, notifier)
 
     stop = asyncio.Event()
 

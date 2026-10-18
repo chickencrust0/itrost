@@ -92,10 +92,6 @@ def lead_decision_keyboard(lead_id: Any) -> List[Dict[str, Any]]:
 def teacher_menu_keyboard() -> List[Dict[str, Any]]:
     return [keyboard([
         [btn_callback("📅 Моё расписание", "menu:teacher:schedule")],
-        # Преподаватель может заморозить занятие так же, как родитель:
-        # родители часто договариваются напрямую с педагогом, и без этого
-        # пункта педагогу приходилось пересылать просьбу менеджеру.
-        [btn_callback("❄️ Заморозить занятие", "menu:teacher:freeze")],
         [btn_callback("📊 Отчёт по урокам", "menu:teacher:report")],
         [btn_callback("👤 Связаться с администратором", "menu:support")],
         [btn_callback("🔔 Настройки уведомлений", "menu:notifications")],
@@ -111,11 +107,6 @@ def parent_menu_keyboard() -> List[Dict[str, Any]]:
         # показывает вовсе, а слово «баланс» заставляло родителей искать
         # там оплату.
         [btn_callback("🎟 Остаток занятий", "menu:parent:balance")],
-        # Заморозка вынесена в отдельный пункт меню. Раньше кнопки
-        # заморозки висели под каждой карточкой расписания — родителю
-        # было неочевидно, что заморозка живёт именно там.
-        [btn_callback("❄️ Заморозить занятие", "menu:parent:freeze")],
-        [btn_callback("📋 Мои заморозки", "menu:parent:freezes")],
         [btn_callback("👤 Связаться с администратором", "menu:support")],
         [btn_callback("🔔 Настройки уведомлений", "menu:notifications")],
         [btn_callback("🚪 Выйти из профиля", "menu:logout")],
@@ -129,7 +120,6 @@ def manager_menu_keyboard() -> List[Dict[str, Any]]:
         [btn_callback("🔁 Заявки на перенос", "menu:manager:transfers")],
         [btn_callback("📊 Сводка за период", "menu:manager:summary")],
         [btn_callback("❌ Неявки за сегодня", "menu:manager:absences")],
-        [btn_callback("❄️ Заморозки и справки", "menu:manager:freezes")],
         [btn_callback("👤 Обращения", "menu:manager:support")],
         [btn_callback("👀 Активность в боте", "menu:manager:activity")],
         [btn_callback("🔐 Кто вошёл в бота", "menu:manager:logins")],
@@ -228,38 +218,6 @@ def absence_decision_keyboard(absence_id: Any) -> List[Dict[str, Any]]:
     ])]
 
 
-def lesson_freeze_keyboard(lesson_id: Any) -> List[Dict[str, Any]]:
-    """
-    Действия родителя по конкретному занятию в расписании.
-
-    Прикрепляется только к занятиям, до начала которых осталось не меньше
-    settings.FREEZE_DEADLINE_HOURS часов (см. bot/handlers/parent.py):
-    позже заморозка невозможна, и кнопка вводила бы в заблуждение.
-    """
-    return [keyboard([
-        [btn_callback("❄️ Заморозить без причины", f"pfrz_no:{lesson_id}")],
-        [btn_callback("🙏 Заморозить по уважительной", f"pfrz_ok:{lesson_id}")],
-    ])]
-
-
-def freeze_confirm_keyboard(lesson_id: Any) -> List[Dict[str, Any]]:
-    return [keyboard([
-        [btn_callback("✅ Да, заморозить", f"pfrz_yes:{lesson_id}", intent="negative")],
-        [btn_callback("❌ Отмена", f"pfrz_cancel:{lesson_id}")],
-    ])]
-
-
-def freeze_reason_keyboard(lesson_id: Any) -> List[Dict[str, Any]]:
-    return [keyboard([
-        [btn_callback("🏥 По состоянию здоровья", f"pfrz_health:{lesson_id}")],
-        [btn_callback("📝 Другая причина", f"pfrz_other:{lesson_id}")],
-    ])]
-
-
-def certificate_upload_keyboard(freeze_id: Any) -> List[Dict[str, Any]]:
-    return [keyboard([[btn_callback("📎 Прикрепить справку", f"cert:{freeze_id}")]])]
-
-
 def contact_admin_keyboard() -> List[Dict[str, Any]]:
     """Та же кнопка связи, что и в стартовом меню."""
     return [keyboard([[btn_callback("👤 Связаться с администратором", "menu:support")]])]
@@ -337,53 +295,6 @@ def recipients_keyboard() -> List[Dict[str, Any]]:
         [btn_callback("👨‍🏫 Преподавателям", "broadcast:teacher")],
         [btn_callback("📢 Вообще всем", "broadcast:all")],
         [btn_callback("Отмена", "broadcast:cancel")],
-    ])]
-
-
-# ==================== ЗАМОРОЗКА ПРЕПОДАВАТЕЛЕМ ====================
-#
-# Преподавателю нужен лишний шаг по сравнению с родителем: родитель
-# морозит занятие своего ребёнка, а у преподавателя в занятии несколько
-# детей, и сперва надо выбрать, чьё занятие морозим.
-
-def teacher_freeze_students_keyboard(
-    lesson_id: Any, students: List[Any]
-) -> List[Dict[str, Any]]:
-    """
-    Ученики занятия — по кнопке на каждого, как в отметке посещаемости.
-
-    Заморозка всегда касается КОНКРЕТНОГО ребёнка: у него расходуется
-    счётчик и ему возвращается занятие. Общей кнопки «заморозить
-    занятие» здесь нет намеренно — она создавала впечатление, что
-    морозится вся группа сразу.
-    """
-    rows: Keyboard = [
-        [btn_callback(_short(name), f"tfrz_pick:{lesson_id}:{client_id}")]
-        for client_id, name in students
-    ]
-    rows.append([btn_callback("❌ Отмена", "menu:teacher:cancel")])
-    return [keyboard(rows)]
-
-
-def teacher_freeze_reason_keyboard(lesson_id: Any, client_id: Any) -> List[Dict[str, Any]]:
-    return [keyboard([
-        [btn_callback("❄️ Без причины", f"tfrz_no:{lesson_id}:{client_id}")],
-        [btn_callback("🙏 По уважительной причине", f"tfrz_ok:{lesson_id}:{client_id}")],
-        [btn_callback("❌ Отмена", "menu:teacher:cancel")],
-    ])]
-
-
-def teacher_freeze_confirm_keyboard(lesson_id: Any, client_id: Any) -> List[Dict[str, Any]]:
-    return [keyboard([
-        [btn_callback("✅ Да, заморозить", f"tfrz_yes:{lesson_id}:{client_id}", intent="negative")],
-        [btn_callback("❌ Отмена", "menu:teacher:cancel")],
-    ])]
-
-
-def teacher_freeze_valid_keyboard(lesson_id: Any, client_id: Any) -> List[Dict[str, Any]]:
-    return [keyboard([
-        [btn_callback("🏥 По состоянию здоровья", f"tfrz_health:{lesson_id}:{client_id}")],
-        [btn_callback("📝 Другая причина", f"tfrz_other:{lesson_id}:{client_id}")],
     ])]
 
 
